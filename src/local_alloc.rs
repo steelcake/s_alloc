@@ -1,0 +1,298 @@
+use core::alloc::{AllocError, Allocator, Layout};
+use core::ptr::NonNull;
+use std::cell::RefCell;
+use std::ops::DerefMut;
+
+use crate::page_alloc::PageAlloc;
+use crate::util::{align_offset, align_up};
+
+// Use this to avoid creating aliased pointers.
+// Not sure of all the details of unsafety of that but doing it to make "sure".
+type Ptr = usize;
+
+#[derive(Clone, Copy)]
+struct Slice {
+    ptr: Ptr,
+    len: usize,
+}
+
+struct InnerLocalAlloc<Alloc: PageAlloc> {
+    page_alloc: Alloc,
+    pages: Vec<Slice>,
+    free_list: Vec<Vec<Slice>>,
+    free_after: usize,
+    error_after: usize,
+    min_page_size: usize,
+    total_page_size: usize,
+}
+
+pub struct LocalAlloc<Alloc: PageAlloc> {
+    inner: RefCell<InnerLocalAlloc<Alloc>>,
+}
+
+impl<Alloc: PageAlloc> Drop for LocalAlloc<Alloc> {
+    fn drop(&mut self) {
+        let this = self.inner.borrow_mut();
+        for page in this.pages.iter() {
+            // Safety: there are no references to the pages remaning at the time of drop.
+            // So constructing a pointer to the page itself doesn't alias. Pages are never null.
+            // And we only allocate pages using self.page_alloc
+            unsafe {
+                let ptr = NonNull::new(page.ptr as *mut u8).unwrap();
+                let len = page.len;
+
+                let page = NonNull::slice_from_raw_parts(ptr, len);
+
+                this.page_alloc.dealloc_page(page).unwrap();
+            }
+        }
+    }
+}
+
+pub struct Config<Alloc: PageAlloc> {
+    page_alloc: Alloc,
+    free_after: usize,
+    error_after: usize,
+    min_page_size: usize,
+}
+
+impl<Alloc: PageAlloc> Config<Alloc> {
+    pub fn new(page_alloc: Alloc) -> Self {
+        Self {
+            page_alloc,
+            free_after: 1 << 30, // 1 GB
+            error_after: usize::MAX,
+            min_page_size: 1 << 26, // 64 MB
+        }
+    }
+
+    pub fn free_after(&mut self, free_after: usize) -> &mut Self {
+        self.free_after = free_after;
+        self
+    }
+
+    pub fn error_after(&mut self, error_after: usize) -> &mut Self {
+        self.error_after = error_after;
+        self
+    }
+
+    pub fn min_page_size(&mut self, min_page_size: usize) -> &mut Self {
+        self.min_page_size = min_page_size;
+        self
+    }
+}
+
+impl<Alloc: PageAlloc> LocalAlloc<Alloc> {
+    pub fn new(config: Config<Alloc>) -> Self {
+        Self {
+            inner: RefCell::new(InnerLocalAlloc {
+                page_alloc: config.page_alloc,
+                free_after: config.free_after,
+                error_after: config.error_after,
+                min_page_size: config.min_page_size,
+                free_list: Vec::new(),
+                pages: Vec::new(),
+                total_page_size: 0,
+            }),
+        }
+    }
+
+    fn try_alloc_in_existing_pages(this: &mut InnerLocalAlloc<Alloc>, layout: Layout) -> Option<NonNull<[u8]>> {
+        // Try to find a page that fits this allocation
+        for free_ranges in this.free_list.iter_mut() {
+            for free_range_idx in 0..free_ranges.len() {
+                let free_range = *free_ranges.get(free_range_idx).unwrap();
+                let alignment_offset = align_up(free_range.ptr, layout.align());
+                let needed_size = alignment_offset + layout.size();
+                if free_range.len >= needed_size {
+                    if alignment_offset > 0 {
+                        free_ranges.push(Slice {
+                            ptr: free_range.ptr,
+                            len: alignment_offset,
+                        });
+                    }
+                    if free_range.len > needed_size {
+                        free_ranges.push(Slice {
+                            ptr: free_range.ptr + needed_size, 
+                            len: free_range.len - needed_size, 
+                        })
+                    }
+                    free_ranges.swap_remove(free_range_idx);
+
+                    let ptr = NonNull::new((free_range.ptr+alignment_offset) as *mut u8).unwrap();
+                    return Some(NonNull::slice_from_raw_parts(ptr, layout.size()));
+                } 
+            }
+        }
+
+        None
+    }
+
+    fn alloc_in_new_page(this: &mut InnerLocalAlloc<Alloc>, page: Slice, layout: Layout) -> NonNull<[u8]> {
+        assert_ne!(layout.size(), 0);
+        assert!(page.len >= layout.size());
+        assert_eq!(align_offset(page.ptr, layout.align()), 0);
+
+        this.pages.push(page);
+
+        let mut free_ranges = Vec::new();
+        if layout.size() < page.len {
+            free_ranges.push(Slice {
+                ptr: page.ptr + layout.size(),
+                len: page.len - layout.size(),
+            });
+        }
+        this.free_list.push(free_ranges);
+
+        let ptr = NonNull::new(page.ptr as *mut u8).unwrap();
+        NonNull::slice_from_raw_parts(ptr, page.len)
+    }
+
+    fn free_pages_if_needed(this: &mut InnerLocalAlloc<Alloc>) {
+        if this.free_after >= this.total_page_size {
+            return;
+        }
+
+        let mut page_index = 0;
+
+        // try to find any empty pages and free them
+        // this loop pattern is used because we need to remove items while iterating
+        while page_index < this.pages.len() {
+            let free_r = this.free_list.get_mut(page_index).unwrap();
+            if free_r.len() == 1 {
+                let range = *free_r.get(0).unwrap();
+                let page = *this.pages.get(page_index).unwrap();
+                if range.ptr == page.ptr && range.len == page.len {
+                    this.pages.swap_remove(page_index);
+                    this.free_list.swap_remove(page_index);
+
+                    this.total_page_size -= page.len;
+
+                    let ptr = NonNull::new(page.ptr as *mut u8).unwrap();
+                    let page = NonNull::slice_from_raw_parts(ptr, page.len);
+                    // Safety: we allocate these pages with the same page alloc.
+                    // page and it's free_ranges are removed from the data structure immediately
+                    // before freeing the page.
+                    unsafe { this.page_alloc.dealloc_page(page).unwrap() };
+
+                    continue;
+                }
+            }
+            page_index += 1;
+        }
+    }
+}
+
+// Safety: pointers given by local alloc point to actual pages and not to inside the struct itself.
+// So it is safe to move a LocalAlloc while there are live allocations on it.
+unsafe impl<Alloc: PageAlloc> Allocator for LocalAlloc<Alloc> {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let mut this = self.inner.borrow_mut();
+        let this = this.deref_mut();
+
+        if this.error_after <= this.total_page_size {
+            return Err(AllocError);
+        }
+
+        // Alignment over 4KB is not allowed
+        if layout.align() > 1 << 12 {
+            return Err(AllocError);
+        }
+
+        if layout.size() == 0 {
+            return Ok(NonNull::slice_from_raw_parts(NonNull::dangling(), 0));
+        }
+
+        if let Some(res) = Self::try_alloc_in_existing_pages(this, layout) {
+            return Ok(res);
+        }
+
+        let page_alloc_size = this.min_page_size.max(layout.size());
+        let page = this.page_alloc.alloc_page(page_alloc_size)?;
+        let page = Slice {
+            ptr: page.as_mut_ptr() as usize,
+            len: page.len(),
+        };
+        this.total_page_size += page.len;
+
+        Ok(Self::alloc_in_new_page(this, page, layout))
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        let mut this = self.inner.borrow_mut();
+        let this = this.deref_mut();
+
+        let start_addr = ptr.as_ptr() as usize;
+        let end_addr = start_addr + layout.size();
+
+        for page_idx in 0..this.pages.len() {
+            {
+                let page = *this.pages.get(page_idx).unwrap();
+                let contains = start_addr >= page.ptr && page.ptr + page.len >= end_addr;
+                if !contains {
+                    continue;
+                }
+            }
+
+            let free_ranges = this.free_list.get_mut(page_idx).unwrap();
+            let mut range_to_insert = Slice {
+                ptr: start_addr,
+                len: layout.size(),
+            };
+            let mut free_range_idx = 0;
+            let mut found = false;
+            // Try to find adjacent free ranges to the free range we want to insert.
+            // We might have two such ranges, one to the left of our range and one to the right.
+            while free_range_idx < free_ranges.len() {
+                let free_range = *free_ranges.get(free_range_idx).unwrap();
+                if free_range.ptr == end_addr {
+                    range_to_insert = Slice {
+                        ptr: range_to_insert.ptr,
+                        len: range_to_insert.len + free_range.len,
+                    };
+                    free_ranges.swap_remove(free_range_idx);
+                    if found {
+                        break;
+                    }
+                    found = true;
+                } else if free_range.ptr + free_range.len == start_addr {
+                    range_to_insert = Slice {
+                        ptr: free_range.ptr,
+                        len: range_to_insert.len + free_range.len,
+                    };
+                    free_ranges.swap_remove(free_range_idx);
+                    if found {
+                        break;
+                    }
+                    found = true;
+                } else {
+                    free_range_idx += 1;
+                }
+            }
+
+            free_ranges.push(range_to_insert);
+
+            Self::free_pages_if_needed(this);
+        }
+
+        panic!("bad deallocate");
+    }
+
+    unsafe fn grow(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        todo!()
+    }
+
+    unsafe fn shrink(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        todo!()
+    }
+}
