@@ -97,7 +97,10 @@ impl<Alloc: PageAlloc> LocalAlloc<Alloc> {
         }
     }
 
-    fn try_alloc_in_existing_pages(this: &mut InnerLocalAlloc<Alloc>, layout: Layout) -> Option<NonNull<[u8]>> {
+    fn try_alloc_in_existing_pages(
+        this: &mut InnerLocalAlloc<Alloc>,
+        layout: Layout,
+    ) -> Option<NonNull<[u8]>> {
         // Try to find a page that fits this allocation
         for free_ranges in this.free_list.iter_mut() {
             for free_range_idx in 0..free_ranges.len() {
@@ -113,22 +116,26 @@ impl<Alloc: PageAlloc> LocalAlloc<Alloc> {
                     }
                     if free_range.len > needed_size {
                         free_ranges.push(Slice {
-                            ptr: free_range.ptr + needed_size, 
-                            len: free_range.len - needed_size, 
+                            ptr: free_range.ptr + needed_size,
+                            len: free_range.len - needed_size,
                         })
                     }
                     free_ranges.swap_remove(free_range_idx);
 
-                    let ptr = NonNull::new((free_range.ptr+alignment_offset) as *mut u8).unwrap();
+                    let ptr = NonNull::new((free_range.ptr + alignment_offset) as *mut u8).unwrap();
                     return Some(NonNull::slice_from_raw_parts(ptr, layout.size()));
-                } 
+                }
             }
         }
 
         None
     }
 
-    fn alloc_in_new_page(this: &mut InnerLocalAlloc<Alloc>, page: Slice, layout: Layout) -> NonNull<[u8]> {
+    fn alloc_in_new_page(
+        this: &mut InnerLocalAlloc<Alloc>,
+        page: Slice,
+        layout: Layout,
+    ) -> NonNull<[u8]> {
         assert_ne!(layout.size(), 0);
         assert!(page.len >= layout.size());
         assert_eq!(align_offset(page.ptr, layout.align()), 0);
@@ -181,6 +188,118 @@ impl<Alloc: PageAlloc> LocalAlloc<Alloc> {
             page_index += 1;
         }
     }
+
+    fn resize(
+        this: &mut InnerLocalAlloc<Alloc>,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        // Increasing the alignment is not supported
+        // Decrasing doesn't matter since we don't move the pointer around
+        if old_layout.align() < new_layout.align() {
+            return Err(AllocError);
+        }
+
+        if new_layout.size() == 0 {
+            if old_layout.size() != 0 {
+                Self::dealloc(this, ptr, old_layout.size());
+            }
+            return Ok(NonNull::slice_from_raw_parts(NonNull::dangling(), 0));
+        }
+
+        if old_layout.size() > new_layout.size() {
+            let size_diff = old_layout.size() - new_layout.size();
+            // Safety: We are just splitting the old allocation and deallocating the remainder
+            unsafe { Self::dealloc(this, ptr.add(new_layout.size()), size_diff) };
+            return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
+        } else if old_layout.size() == new_layout.size() {
+            return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
+        }
+
+        let end_addr = (ptr.as_ptr() as usize) + old_layout.size();
+
+        for free_ranges in this.free_list.iter_mut() {
+            for free_range_idx in 0..free_ranges.len() {
+                let free_range = *free_ranges.get(free_range_idx).unwrap();
+                if free_range.ptr == end_addr {
+                    if free_range.len + old_layout.size() > new_layout.size() {
+                        let size_diff = new_layout.size() - old_layout.size();
+                        free_ranges[free_range_idx].len -= size_diff;
+                        return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
+                    } else if free_range.len + old_layout.size() == new_layout.size() {
+                        free_ranges.swap_remove(free_range_idx);
+                        return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
+                    } else {
+                        return Err(AllocError);
+                    }
+                }
+            }
+        }
+
+        Err(AllocError)
+    }
+
+    fn dealloc(this: &mut InnerLocalAlloc<Alloc>, ptr: NonNull<u8>, size: usize) {
+        if size == 0 {
+            return;
+        }
+
+        let start_addr = ptr.as_ptr() as usize;
+        let end_addr = start_addr + size;
+
+        for page_idx in 0..this.pages.len() {
+            {
+                let page = *this.pages.get(page_idx).unwrap();
+                let contains = start_addr >= page.ptr && page.ptr + page.len >= end_addr;
+                if !contains {
+                    continue;
+                }
+            }
+
+            let free_ranges = this.free_list.get_mut(page_idx).unwrap();
+            let mut range_to_insert = Slice {
+                ptr: start_addr,
+                len: size,
+            };
+            let mut free_range_idx = 0;
+            let mut found = false;
+            // Try to find adjacent free ranges to the free range we want to insert.
+            // We might have two such ranges, one to the left of our range and one to the right.
+            while free_range_idx < free_ranges.len() {
+                let free_range = *free_ranges.get(free_range_idx).unwrap();
+                if free_range.ptr == end_addr {
+                    range_to_insert = Slice {
+                        ptr: range_to_insert.ptr,
+                        len: range_to_insert.len + free_range.len,
+                    };
+                    free_ranges.swap_remove(free_range_idx);
+                    if found {
+                        break;
+                    }
+                    found = true;
+                } else if free_range.ptr + free_range.len == start_addr {
+                    range_to_insert = Slice {
+                        ptr: free_range.ptr,
+                        len: range_to_insert.len + free_range.len,
+                    };
+                    free_ranges.swap_remove(free_range_idx);
+                    if found {
+                        break;
+                    }
+                    found = true;
+                } else {
+                    free_range_idx += 1;
+                }
+            }
+
+            free_ranges.push(range_to_insert);
+
+            Self::free_pages_if_needed(this);
+        }
+
+        panic!("bad deallocate");
+    }
 }
 
 // Safety: pointers given by local alloc point to actual pages and not to inside the struct itself.
@@ -221,61 +340,7 @@ unsafe impl<Alloc: PageAlloc> Allocator for LocalAlloc<Alloc> {
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         let mut this = self.inner.borrow_mut();
         let this = this.deref_mut();
-
-        let start_addr = ptr.as_ptr() as usize;
-        let end_addr = start_addr + layout.size();
-
-        for page_idx in 0..this.pages.len() {
-            {
-                let page = *this.pages.get(page_idx).unwrap();
-                let contains = start_addr >= page.ptr && page.ptr + page.len >= end_addr;
-                if !contains {
-                    continue;
-                }
-            }
-
-            let free_ranges = this.free_list.get_mut(page_idx).unwrap();
-            let mut range_to_insert = Slice {
-                ptr: start_addr,
-                len: layout.size(),
-            };
-            let mut free_range_idx = 0;
-            let mut found = false;
-            // Try to find adjacent free ranges to the free range we want to insert.
-            // We might have two such ranges, one to the left of our range and one to the right.
-            while free_range_idx < free_ranges.len() {
-                let free_range = *free_ranges.get(free_range_idx).unwrap();
-                if free_range.ptr == end_addr {
-                    range_to_insert = Slice {
-                        ptr: range_to_insert.ptr,
-                        len: range_to_insert.len + free_range.len,
-                    };
-                    free_ranges.swap_remove(free_range_idx);
-                    if found {
-                        break;
-                    }
-                    found = true;
-                } else if free_range.ptr + free_range.len == start_addr {
-                    range_to_insert = Slice {
-                        ptr: free_range.ptr,
-                        len: range_to_insert.len + free_range.len,
-                    };
-                    free_ranges.swap_remove(free_range_idx);
-                    if found {
-                        break;
-                    }
-                    found = true;
-                } else {
-                    free_range_idx += 1;
-                }
-            }
-
-            free_ranges.push(range_to_insert);
-
-            Self::free_pages_if_needed(this);
-        }
-
-        panic!("bad deallocate");
+        Self::dealloc(this, ptr, layout.size())
     }
 
     unsafe fn grow(
@@ -284,7 +349,9 @@ unsafe impl<Alloc: PageAlloc> Allocator for LocalAlloc<Alloc> {
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        todo!()
+        let mut this = self.inner.borrow_mut();
+        let this = this.deref_mut();
+        Self::resize(this, ptr, old_layout, new_layout)
     }
 
     unsafe fn shrink(
@@ -293,6 +360,8 @@ unsafe impl<Alloc: PageAlloc> Allocator for LocalAlloc<Alloc> {
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        todo!()
+        let mut this = self.inner.borrow_mut();
+        let this = this.deref_mut();
+        Self::resize(this, ptr, old_layout, new_layout)
     }
 }

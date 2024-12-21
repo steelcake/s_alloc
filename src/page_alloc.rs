@@ -1,5 +1,5 @@
-use core::ptr::NonNull;
 use core::alloc::AllocError;
+use core::ptr::NonNull;
 
 pub unsafe trait PageAlloc {
     fn alloc_page(&self, size: usize) -> Result<NonNull<[u8]>, AllocError>;
