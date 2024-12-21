@@ -167,7 +167,7 @@ impl<Alloc: PageAlloc> LocalAlloc<Alloc> {
         while page_index < this.pages.len() {
             let free_r = this.free_list.get_mut(page_index).unwrap();
             if free_r.len() == 1 {
-                let range = *free_r.get(0).unwrap();
+                let range = *free_r.first().unwrap();
                 let page = *this.pages.get(page_index).unwrap();
                 if range.ptr == page.ptr && range.len == page.len {
                     this.pages.swap_remove(page_index);

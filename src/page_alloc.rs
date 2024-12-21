@@ -2,11 +2,15 @@ use core::alloc::{AllocError, Layout};
 use core::ptr::NonNull;
 use std::alloc::Allocator;
 
-/// Safety: moving an implementation of this trait shouldn't invalidate currently allocated pages.
+/// # Safety
+///
+/// moving an implementation of this trait shouldn't invalidate currently allocated pages.
 pub unsafe trait PageAlloc {
     /// Returns a pointer aligned to at least 4KB
     fn alloc_page(&self, size: usize) -> Result<NonNull<[u8]>, AllocError>;
-    /// Safety: page has to be a currently allocated page from this instance of PageAlloc
+    /// # Safety
+    ///
+    /// page has to be a currently allocated page from this instance of PageAlloc
     unsafe fn dealloc_page(&self, page: NonNull<[u8]>) -> Result<(), AllocError>;
 }
 
