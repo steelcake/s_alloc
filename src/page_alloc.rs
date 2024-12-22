@@ -11,7 +11,7 @@ pub unsafe trait PageAlloc {
     /// # Safety
     ///
     /// page has to be a currently allocated page from this instance of PageAlloc
-    unsafe fn dealloc_page(&self, page: NonNull<[u8]>) -> Result<(), AllocError>;
+    unsafe fn dealloc_page(&self, page: NonNull<[u8]>);
 }
 
 unsafe impl PageAlloc for std::alloc::Global {
@@ -20,11 +20,13 @@ unsafe impl PageAlloc for std::alloc::Global {
         let layout = Layout::from_size_align(alloc_size, 1 << 12).unwrap();
         self.allocate(layout)
     }
-    unsafe fn dealloc_page(&self, page: NonNull<[u8]>) -> Result<(), AllocError> {
+    unsafe fn dealloc_page(&self, page: NonNull<[u8]>) {
         self.deallocate(
             NonNull::new(page.as_ptr().as_mut_ptr()).unwrap(),
             Layout::from_size_align(page.len(), 1 << 12).unwrap(),
         );
-        Ok(())
     }
 }
+
+#[cfg_attr(target_os = "linux", path = "./page_alloc/linux.rs")]
+mod dynamic_page_alloc;

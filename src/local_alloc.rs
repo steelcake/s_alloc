@@ -30,7 +30,7 @@ pub struct LocalAlloc<'a> {
     inner: RefCell<InnerLocalAlloc<'a>>,
 }
 
-impl<'a> Drop for LocalAlloc<'a> {
+impl Drop for LocalAlloc<'_> {
     fn drop(&mut self) {
         let this = self.inner.borrow_mut();
         for page in this.pages.iter() {
@@ -43,7 +43,7 @@ impl<'a> Drop for LocalAlloc<'a> {
 
                 let page = NonNull::slice_from_raw_parts(ptr, len);
 
-                this.page_alloc.dealloc_page(page).unwrap();
+                this.page_alloc.dealloc_page(page);
             }
         }
     }
@@ -60,9 +60,9 @@ impl<'a> Config<'a> {
     pub fn new(page_alloc: &'a dyn PageAlloc) -> Self {
         Self {
             page_alloc,
-            free_after: 1 << 30, // 1 GB
+            free_after: 1 << 29, // 512 MB
             error_after: usize::MAX,
-            min_page_size: 1 << 26, // 64 MB
+            min_page_size: 1 << 27, // 128 MB
         }
     }
 
@@ -176,7 +176,7 @@ impl<'a> LocalAlloc<'a> {
                     // Safety: we allocate these pages with the same page alloc.
                     // page and it's free_ranges are removed from the data structure immediately
                     // before freeing the page.
-                    unsafe { this.page_alloc.dealloc_page(page).unwrap() };
+                    unsafe { this.page_alloc.dealloc_page(page) };
 
                     continue;
                 }
@@ -300,7 +300,7 @@ impl<'a> LocalAlloc<'a> {
 
 // Safety: pointers given by local alloc point to actual pages and not to inside the struct itself.
 // So it is safe to move a LocalAlloc while there are live allocations on it.
-unsafe impl<'a> Allocator for LocalAlloc<'a> {
+unsafe impl Allocator for LocalAlloc<'_> {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         let mut this = self.inner.borrow_mut();
         let this = this.deref_mut();
@@ -322,7 +322,7 @@ unsafe impl<'a> Allocator for LocalAlloc<'a> {
             return Ok(res);
         }
 
-        let page_alloc_size = layout.size().next_multiple_of(this.min_page_size);
+        let page_alloc_size = layout.size().max(this.min_page_size);
         let page = this.page_alloc.alloc_page(page_alloc_size)?;
         let page = Slice {
             ptr: page.as_mut_ptr() as usize,

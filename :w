@@ -1,38 +1,30 @@
 use std::alloc::AllocError;
-use std::io;
 use std::ptr::NonNull;
+use std::io;
 
 use super::PageAlloc;
 
 pub struct DynamicPageAlloc;
 
-// Safety: moving the struct doesn't invalidate currently allocated pages
 unsafe impl PageAlloc for DynamicPageAlloc {
     fn alloc_page(&self, size: usize) -> Result<NonNull<[u8]>, AllocError> {
         let alloc_size = size.next_multiple_of(1 << 21); // round up to next multiple of 2MB
-
+    
         match mmap_wrapper(alloc_size) {
             Ok(page) => Ok(page),
             Err(e) => {
-                eprintln!("failed to allocate memory with mmap: {}.\naborting.", e);
-                std::process::abort();
+                eprintln!("failed to allocate memory with mmap: {}", e);
+                Err(AllocError)
             }
         }
     }
 
-    unsafe fn dealloc_page(&self, page: NonNull<[u8]>) {
-        let ptr = page.as_ptr().as_mut_ptr();
-        let size = page.len();
-
-        if let Err(e) = munmap_wrapper(ptr, size) {
-            eprintln!("failed to deallocate page with munmap: {}\naborting.", e);
-            std::process::abort();
-        }
+    unsafe fn dealloc_page(&self, page: NonNull<[u8]>) -> Result<(), AllocError> {
+        todo!()
     }
 }
 
 fn mmap_wrapper(size: usize) -> io::Result<NonNull<[u8]>> {
-    assert!(size > 0);
     unsafe {
         match libc::mmap(
             std::ptr::null_mut(),

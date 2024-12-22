@@ -103,7 +103,7 @@ unsafe impl<Alloc: Allocator> Allocator for BumpAlloc<Alloc> {
             return Ok(NonNull::slice_from_raw_parts(ptr, layout.size()));
         }
 
-        let alloc_size = layout.size().next_multiple_of(this.min_alloc_size);
+        let alloc_size = layout.size().max(this.min_alloc_size);
         let alloc_layout = Layout::from_size_align(alloc_size, 1 << 12).unwrap();
 
         let new_alloc = this.base_alloc.allocate(alloc_layout)?;
