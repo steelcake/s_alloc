@@ -16,8 +16,8 @@ struct Slice {
     len: usize,
 }
 
-struct InnerLocalAlloc {
-    page_alloc: &'static dyn PageAlloc,
+struct InnerLocalAlloc<'a> {
+    page_alloc: &'a dyn PageAlloc,
     pages: Vec<Slice>,
     free_list: Vec<Vec<Slice>>,
     free_after: usize,
@@ -26,11 +26,11 @@ struct InnerLocalAlloc {
     total_page_size: usize,
 }
 
-pub struct LocalAlloc {
-    inner: RefCell<InnerLocalAlloc>,
+pub struct LocalAlloc<'a> {
+    inner: RefCell<InnerLocalAlloc<'a>>,
 }
 
-impl Drop for LocalAlloc {
+impl<'a> Drop for LocalAlloc<'a> {
     fn drop(&mut self) {
         let this = self.inner.borrow_mut();
         for page in this.pages.iter() {
@@ -49,15 +49,15 @@ impl Drop for LocalAlloc {
     }
 }
 
-pub struct Config {
-    page_alloc: &'static dyn PageAlloc,
+pub struct Config<'a> {
+    page_alloc: &'a dyn PageAlloc,
     free_after: usize,
     error_after: usize,
     min_page_size: usize,
 }
 
-impl Config {
-    pub fn new(page_alloc: &'static dyn PageAlloc) -> Self {
+impl<'a> Config<'a> {
+    pub fn new(page_alloc: &'a dyn PageAlloc) -> Self {
         Self {
             page_alloc,
             free_after: 1 << 30, // 1 GB
@@ -82,8 +82,8 @@ impl Config {
     }
 }
 
-impl LocalAlloc {
-    pub fn new(config: Config) -> Self {
+impl<'a> LocalAlloc<'a> {
+    pub fn new(config: Config<'a>) -> Self {
         Self {
             inner: RefCell::new(InnerLocalAlloc {
                 page_alloc: config.page_alloc,
@@ -300,7 +300,7 @@ impl LocalAlloc {
 
 // Safety: pointers given by local alloc point to actual pages and not to inside the struct itself.
 // So it is safe to move a LocalAlloc while there are live allocations on it.
-unsafe impl Allocator for LocalAlloc {
+unsafe impl<'a> Allocator for LocalAlloc<'a> {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         let mut this = self.inner.borrow_mut();
         let this = this.deref_mut();

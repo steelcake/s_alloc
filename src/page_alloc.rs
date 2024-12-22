@@ -5,7 +5,7 @@ use std::alloc::Allocator;
 /// # Safety
 ///
 /// moving an implementation of this trait shouldn't invalidate currently allocated pages.
-pub unsafe trait PageAlloc: Sync {
+pub unsafe trait PageAlloc {
     /// Returns a pointer aligned to at least 4KB
     fn alloc_page(&self, size: usize) -> Result<NonNull<[u8]>, AllocError>;
     /// # Safety
@@ -28,5 +28,3 @@ unsafe impl PageAlloc for std::alloc::Global {
         Ok(())
     }
 }
-
-pub static GLOBAL: &'static dyn PageAlloc = &std::alloc::Global;
