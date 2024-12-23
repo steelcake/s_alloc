@@ -191,6 +191,10 @@ impl<'a> LocalAlloc<'a> {
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
+        if old_layout.size() == 0 && new_layout.size() > 0 {
+            return Self::alloc(this, new_layout);
+        }
+
         // Increasing the alignment is not supported
         // Decrasing doesn't matter since we don't move the pointer around
         if old_layout.align() < new_layout.align() {
@@ -234,6 +238,35 @@ impl<'a> LocalAlloc<'a> {
         }
 
         Err(AllocError)
+    }
+
+    fn alloc(this: &mut InnerLocalAlloc, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        if this.error_after <= this.total_page_size {
+            return Err(AllocError);
+        }
+
+        // Alignment over 4KB is not allowed
+        if layout.align() > 1 << 12 {
+            return Err(AllocError);
+        }
+
+        if layout.size() == 0 {
+            return Ok(NonNull::slice_from_raw_parts(NonNull::dangling(), 0));
+        }
+
+        if let Some(res) = Self::try_alloc_in_existing_pages(this, layout) {
+            return Ok(res);
+        }
+
+        let page_alloc_size = layout.size().max(this.min_page_size);
+        let page = this.page_alloc.alloc_page(page_alloc_size)?;
+        let page = Slice {
+            ptr: page.as_mut_ptr() as usize,
+            len: page.len(),
+        };
+        this.total_page_size += page.len;
+
+        Ok(Self::alloc_in_new_page(this, page, layout))
     }
 
     fn dealloc(this: &mut InnerLocalAlloc, ptr: NonNull<u8>, size: usize) {
@@ -304,33 +337,7 @@ unsafe impl Allocator for LocalAlloc<'_> {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         let mut this = self.inner.borrow_mut();
         let this = this.deref_mut();
-
-        if this.error_after <= this.total_page_size {
-            return Err(AllocError);
-        }
-
-        // Alignment over 4KB is not allowed
-        if layout.align() > 1 << 12 {
-            return Err(AllocError);
-        }
-
-        if layout.size() == 0 {
-            return Ok(NonNull::slice_from_raw_parts(NonNull::dangling(), 0));
-        }
-
-        if let Some(res) = Self::try_alloc_in_existing_pages(this, layout) {
-            return Ok(res);
-        }
-
-        let page_alloc_size = layout.size().max(this.min_page_size);
-        let page = this.page_alloc.alloc_page(page_alloc_size)?;
-        let page = Slice {
-            ptr: page.as_mut_ptr() as usize,
-            len: page.len(),
-        };
-        this.total_page_size += page.len;
-
-        Ok(Self::alloc_in_new_page(this, page, layout))
+        Self::alloc(this, layout)
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {

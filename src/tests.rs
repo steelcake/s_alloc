@@ -1,4 +1,6 @@
+use crate::valiating_alloc::ValidatingAllocator;
 use std::alloc::{AllocError, Allocator, Layout};
+use std::cell::RefCell;
 use std::ptr::NonNull;
 
 use crate::{
@@ -26,10 +28,7 @@ fn test_local_bump_alloc() {
 }
 
 fn test_allocator<Alloc: Allocator>(alloc: Alloc) {
-    let alloc = ValidatingAllocator {
-        inner: alloc,
-    };
-
+    let alloc = ValidatingAllocator::new(alloc);
 }
 
 fn test_allocator_aligned<Alloc: Allocator>(alloc: Alloc) {}
@@ -43,47 +42,4 @@ fn test_allocator_all<Alloc: Allocator>(alloc: Alloc) {
     test_allocator_aligned(&alloc);
     test_allocator_large_alignment(&alloc);
     test_allocator_aligned_shrink(&alloc);
-}
-
-struct ValidatingAllocator<Alloc: Allocator> {
-    inner: Alloc,
-}
-
-fn check_layout(slice: NonNull<[u8]>, layout: Layout) {
-    assert_eq!(slice.as_ptr().as_mut_ptr().align_offset(layout.align()), 0);
-    assert!(slice.len() >= layout.size());
-}
-
-unsafe impl<Alloc: Allocator> Allocator for ValidatingAllocator<Alloc> {
-    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        let x = self.inner.allocate(layout)?;
-        check_layout(x, layout);
-        Ok(x)
-    }
-
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        self.inner.deallocate(ptr, layout);
-    }
-
-    unsafe fn grow(
-        &self,
-        ptr: NonNull<u8>,
-        old_layout: Layout,
-        new_layout: Layout,
-    ) -> Result<NonNull<[u8]>, AllocError> {
-        let x = self.inner.grow(ptr, old_layout, new_layout)?;
-        check_layout(x, new_layout);
-        Ok(x)
-    }
-
-    unsafe fn shrink(
-        &self,
-        ptr: NonNull<u8>,
-        old_layout: Layout,
-        new_layout: Layout,
-    ) -> Result<NonNull<[u8]>, AllocError> {
-        let x = self.inner.shrink(ptr, old_layout, new_layout)?;
-        check_layout(x, new_layout);
-        Ok(x)
-    }
 }
