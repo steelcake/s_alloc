@@ -108,7 +108,7 @@ unsafe impl<Alloc: Allocator> Allocator for BumpAlloc<Alloc> {
 
         let new_alloc = this.base_alloc.allocate(alloc_layout)?;
         let new_alloc = Slice {
-            ptr: new_alloc.as_ptr().as_mut_ptr() as usize,
+            ptr: new_alloc.cast::<u8>().as_ptr() as usize,
             len: new_alloc.len(),
         };
 

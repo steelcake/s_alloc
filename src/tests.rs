@@ -1,6 +1,5 @@
 use crate::valiating_alloc::ValidatingAllocator;
-use std::alloc::{AllocError, Allocator, Layout};
-use std::cell::RefCell;
+use std::alloc::{Allocator, Layout};
 use std::ptr::NonNull;
 
 use crate::{
@@ -29,6 +28,15 @@ fn test_local_bump_alloc() {
 
 fn test_allocator<Alloc: Allocator>(alloc: Alloc) {
     let alloc = ValidatingAllocator::new(alloc);
+    let layout = Layout::new::<i32>().repeat(100).unwrap().0;
+    let mut ptrs = Vec::<NonNull<[u8]>, &ValidatingAllocator<Alloc>>::new_in(&alloc);
+    for _ in 0..100 {
+        ptrs.push(alloc.allocate(layout).unwrap());
+    }
+
+    for _ in 0..50 {
+        unsafe { alloc.deallocate(ptrs.pop().unwrap().to_raw_parts().0) };
+    }
 }
 
 fn test_allocator_aligned<Alloc: Allocator>(alloc: Alloc) {}

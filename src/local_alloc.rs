@@ -261,7 +261,7 @@ impl<'a> LocalAlloc<'a> {
         let page_alloc_size = layout.size().max(this.min_page_size);
         let page = this.page_alloc.alloc_page(page_alloc_size)?;
         let page = Slice {
-            ptr: page.as_mut_ptr() as usize,
+            ptr: page.cast::<u8>().as_ptr() as usize,
             len: page.len(),
         };
         this.total_page_size += page.len;

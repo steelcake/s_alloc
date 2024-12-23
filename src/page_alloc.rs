@@ -22,7 +22,7 @@ unsafe impl PageAlloc for std::alloc::Global {
     }
     unsafe fn dealloc_page(&self, page: NonNull<[u8]>) {
         self.deallocate(
-            NonNull::new(page.as_ptr().as_mut_ptr()).unwrap(),
+            page.cast::<u8>(),
             Layout::from_size_align(page.len(), 1 << 12).unwrap(),
         );
     }

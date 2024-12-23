@@ -1,5 +1,4 @@
 #![feature(allocator_api)]
-#![feature(slice_ptr_get)]
 #![feature(alloc_layout_extra)]
 #![allow(clippy::comparison_chain)]
 

@@ -29,7 +29,7 @@ fn assert_disjoint(a: Slice, b: Slice) {
 }
 
 fn check_layout(slice: NonNull<[u8]>, layout: Layout) {
-    assert_eq!(slice.as_ptr().as_mut_ptr().align_offset(layout.align()), 0);
+    assert_eq!(slice.cast::<u8>().align_offset(layout.align()), 0);
     assert!(slice.len() >= layout.size());
 }
 
@@ -40,7 +40,7 @@ unsafe impl<Alloc: Allocator> Allocator for ValidatingAllocator<Alloc> {
         if layout.size() > 0 {
             check_layout(x, layout);
             let slice = Slice {
-                ptr: x.as_ptr().as_mut_ptr() as usize,
+                ptr: x.cast::<u8>().as_ptr() as usize,
                 len: x.len(),
             };
             let mut alive_allocs = self.alive_allocs.borrow_mut();
@@ -86,7 +86,7 @@ unsafe impl<Alloc: Allocator> Allocator for ValidatingAllocator<Alloc> {
                 len: old_layout.size(),
             };
             let new_slice = Slice {
-                ptr: x.as_ptr().as_mut_ptr() as usize,
+                ptr: x.cast::<u8>().as_ptr() as usize,
                 len: x.len(),
             };
             check_layout(x, new_layout);
@@ -106,7 +106,7 @@ unsafe impl<Alloc: Allocator> Allocator for ValidatingAllocator<Alloc> {
             panic!("bad grow call");
         }
 
-        return Ok(x);
+        Ok(x)
     }
 
     unsafe fn shrink(
@@ -123,7 +123,7 @@ unsafe impl<Alloc: Allocator> Allocator for ValidatingAllocator<Alloc> {
                 len: old_layout.size(),
             };
             let new_slice = Slice {
-                ptr: x.as_ptr().as_mut_ptr() as usize,
+                ptr: x.cast::<u8>().as_ptr() as usize,
                 len: x.len(),
             };
             check_layout(x, new_layout);

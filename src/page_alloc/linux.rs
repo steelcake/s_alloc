@@ -25,7 +25,7 @@ unsafe impl PageAlloc for DynamicPageAlloc {
         // there is nothing indicating this can cause UB in man page of madvise
         unsafe {
             match libc::madvise(
-                page.as_ptr().as_mut_ptr() as *mut libc::c_void,
+                page.cast::<u8>().as_ptr() as *mut libc::c_void,
                 page.len(),
                 libc::MADV_HUGEPAGE,
             ) {
@@ -56,7 +56,7 @@ unsafe impl PageAlloc for DynamicPageAlloc {
     }
 
     unsafe fn dealloc_page(&self, page: NonNull<[u8]>) {
-        let ptr = page.as_ptr().as_mut_ptr();
+        let ptr = page.cast::<u8>().as_ptr();
         let size = page.len();
 
         if let Err(e) = munmap_wrapper(ptr, size) {
