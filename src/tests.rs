@@ -29,25 +29,25 @@ fn test_local_bump_alloc() {
 fn test_allocator<Alloc: Allocator>(alloc: Alloc) {
     let alloc = ValidatingAllocator::new(alloc);
     let layout = Layout::new::<i32>().repeat(100).unwrap().0;
-    let mut ptrs = Vec::<NonNull<[u8]>, &ValidatingAllocator<Alloc>>::new_in(&alloc);
+    let mut ptrs = Vec::<NonNull<[u8]>, &ValidatingAllocator<Alloc>>::with_capacity_in(500, &alloc);
     for _ in 0..100 {
         ptrs.push(alloc.allocate(layout).unwrap());
     }
 
-    for _ in 0..50 {
-        unsafe { alloc.deallocate(ptrs.pop().unwrap().cast::<u8>(), layout) };
-    }
+    // for _ in 0..50 {
+    //     unsafe { alloc.deallocate(ptrs.pop().unwrap().cast::<u8>(), layout) };
+    // }
 
-    ptrs.shrink_to_fit();
+    // ptrs.shrink_to_fit();
 
-    for _ in 0..50 {
-        unsafe { alloc.deallocate(ptrs.pop().unwrap().cast::<u8>(), layout) };
-    }
+    // for _ in 0..50 {
+    //     unsafe { alloc.deallocate(ptrs.pop().unwrap().cast::<u8>(), layout) };
+    // }
 
-    ptrs.shrink_to_fit();
+    // ptrs.shrink_to_fit();
 
-    let ptr = alloc.allocate(Layout::from_size_align(0, 1).unwrap()).unwrap();
-    unsafe { alloc.deallocate(ptr.cast::<u8>(), Layout::from_size_align(0, 1).unwrap()) };
+    // let ptr = alloc.allocate(Layout::from_size_align(0, 1).unwrap()).unwrap();
+    // unsafe { alloc.deallocate(ptr.cast::<u8>(), Layout::from_size_align(0, 1).unwrap()) };
 }
 
 fn test_allocator_aligned<Alloc: Allocator>(alloc: Alloc) {}

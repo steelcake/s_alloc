@@ -2,7 +2,7 @@ use std::alloc::{AllocError, Allocator, Layout};
 use std::cell::RefCell;
 use std::ptr::NonNull;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct Slice {
     ptr: usize,
     len: usize,
@@ -30,7 +30,7 @@ fn assert_disjoint(a: Slice, b: Slice) {
 
 fn check_layout(slice: NonNull<[u8]>, layout: Layout) {
     assert_eq!(slice.cast::<u8>().align_offset(layout.align()), 0);
-    assert!(slice.len() >= layout.size());
+    assert_eq!(slice.len(), layout.size());
 }
 
 unsafe impl<Alloc: Allocator> Allocator for ValidatingAllocator<Alloc> {
@@ -43,6 +43,8 @@ unsafe impl<Alloc: Allocator> Allocator for ValidatingAllocator<Alloc> {
                 ptr: x.cast::<u8>().as_ptr() as usize,
                 len: x.len(),
             };
+            println!("{}", slice.len);
+            println!("{}", layout.size());
             let mut alive_allocs = self.alive_allocs.borrow_mut();
             for other in alive_allocs.iter() {
                 assert_disjoint(slice, *other);
@@ -60,8 +62,10 @@ unsafe impl<Alloc: Allocator> Allocator for ValidatingAllocator<Alloc> {
                 ptr: ptr.as_ptr() as usize,
                 len: layout.size(),
             };
+            println!("{}", layout.size());
             let mut alive_allocs = self.alive_allocs.borrow_mut();
             for i in 0..alive_allocs.len() {
+                dbg!((alive_allocs[i], slice));
                 if alive_allocs[i] == slice {
                     self.inner.deallocate(ptr, layout);
                     alive_allocs.swap_remove(i);
@@ -140,7 +144,7 @@ unsafe impl<Alloc: Allocator> Allocator for ValidatingAllocator<Alloc> {
                 alive_allocs.push(new_slice);
                 return Ok(x);
             }
-            panic!("bad grow call");
+            panic!("bad shrink call");
         }
         Ok(x)
     }

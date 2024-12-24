@@ -24,6 +24,7 @@ struct InnerLocalAlloc<'a> {
     error_after: usize,
     min_page_size: usize,
     total_page_size: usize,
+    ptr_to_size: Vec<(usize, usize)>,
 }
 
 pub struct LocalAlloc<'a> {
@@ -93,6 +94,7 @@ impl<'a> LocalAlloc<'a> {
                 free_list: Vec::new(),
                 pages: Vec::new(),
                 total_page_size: 0,
+                ptr_to_size: Vec::new(),
             }),
         }
     }
@@ -148,7 +150,7 @@ impl<'a> LocalAlloc<'a> {
         this.free_list.push(free_ranges);
 
         let ptr = NonNull::new(page.ptr as *mut u8).unwrap();
-        NonNull::slice_from_raw_parts(ptr, page.len)
+        NonNull::slice_from_raw_parts(ptr, layout.size())
     }
 
     fn free_pages_if_needed(this: &mut InnerLocalAlloc) {
@@ -185,61 +187,6 @@ impl<'a> LocalAlloc<'a> {
         }
     }
 
-    fn resize(
-        this: &mut InnerLocalAlloc,
-        ptr: NonNull<u8>,
-        old_layout: Layout,
-        new_layout: Layout,
-    ) -> Result<NonNull<[u8]>, AllocError> {
-        if old_layout.size() == 0 && new_layout.size() > 0 {
-            return Self::alloc(this, new_layout);
-        }
-
-        // Increasing the alignment is not supported
-        // Decrasing doesn't matter since we don't move the pointer around
-        if old_layout.align() < new_layout.align() {
-            return Err(AllocError);
-        }
-
-        if new_layout.size() == 0 {
-            if old_layout.size() != 0 {
-                Self::dealloc(this, ptr, old_layout.size());
-            }
-            return Ok(NonNull::slice_from_raw_parts(NonNull::dangling(), 0));
-        }
-
-        if old_layout.size() > new_layout.size() {
-            let size_diff = old_layout.size() - new_layout.size();
-            // Safety: We are just splitting the old allocation and deallocating the remainder
-            unsafe { Self::dealloc(this, ptr.add(new_layout.size()), size_diff) };
-            return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
-        } else if old_layout.size() == new_layout.size() {
-            return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
-        }
-
-        let end_addr = (ptr.as_ptr() as usize) + old_layout.size();
-
-        for free_ranges in this.free_list.iter_mut() {
-            for free_range_idx in 0..free_ranges.len() {
-                let free_range = *free_ranges.get(free_range_idx).unwrap();
-                if free_range.ptr == end_addr {
-                    if free_range.len + old_layout.size() > new_layout.size() {
-                        let size_diff = new_layout.size() - old_layout.size();
-                        free_ranges[free_range_idx].len -= size_diff;
-                        return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
-                    } else if free_range.len + old_layout.size() == new_layout.size() {
-                        free_ranges.swap_remove(free_range_idx);
-                        return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
-                    } else {
-                        return Err(AllocError);
-                    }
-                }
-            }
-        }
-
-        Err(AllocError)
-    }
-
     fn alloc(this: &mut InnerLocalAlloc, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         if this.error_after <= this.total_page_size {
             return Err(AllocError);
@@ -255,6 +202,8 @@ impl<'a> LocalAlloc<'a> {
         }
 
         if let Some(res) = Self::try_alloc_in_existing_pages(this, layout) {
+            this.ptr_to_size
+                .push((res.cast::<u8>().as_ptr() as usize, res.len()));
             return Ok(res);
         }
 
@@ -266,10 +215,22 @@ impl<'a> LocalAlloc<'a> {
         };
         this.total_page_size += page.len;
 
-        Ok(Self::alloc_in_new_page(this, page, layout))
+        let x = Self::alloc_in_new_page(this, page, layout);
+        this.ptr_to_size
+            .push((x.cast::<u8>().as_ptr() as usize, x.len()));
+
+        Ok(x)
     }
 
-    fn dealloc(this: &mut InnerLocalAlloc, ptr: NonNull<u8>, size: usize) {
+    fn dealloc(this: &mut InnerLocalAlloc, ptr: NonNull<u8>, _size: usize) {
+        let addr = ptr.as_ptr() as usize;
+        let size_idx = this
+            .ptr_to_size
+            .iter()
+            .position(|x| x.0 == addr)
+            .expect("find allocation index");
+        let size = this.ptr_to_size.swap_remove(size_idx).1;
+
         if size == 0 {
             return;
         }
@@ -325,6 +286,8 @@ impl<'a> LocalAlloc<'a> {
             free_ranges.push(range_to_insert);
 
             Self::free_pages_if_needed(this);
+
+            return;
         }
 
         panic!("bad deallocate");
@@ -349,22 +312,53 @@ unsafe impl Allocator for LocalAlloc<'_> {
     unsafe fn grow(
         &self,
         ptr: NonNull<u8>,
-        old_layout: Layout,
+        mut old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        let mut this = self.inner.borrow_mut();
-        let this = this.deref_mut();
-        Self::resize(this, ptr, old_layout, new_layout)
-    }
+        assert!(new_layout.size() > old_layout.size());
+        assert_eq!(old_layout.align(), new_layout.align());
 
-    unsafe fn shrink(
-        &self,
-        ptr: NonNull<u8>,
-        old_layout: Layout,
-        new_layout: Layout,
-    ) -> Result<NonNull<[u8]>, AllocError> {
         let mut this = self.inner.borrow_mut();
         let this = this.deref_mut();
-        Self::resize(this, ptr, old_layout, new_layout)
+
+        if old_layout.size() == 0 && new_layout.size() > 0 {
+            return Self::alloc(this, new_layout);
+        }
+
+        if old_layout.size() > 0 {
+            let idx = this
+                .ptr_to_size
+                .iter()
+                .position(|x| x.0 == ptr.as_ptr() as usize)
+                .expect("find old alloc size");
+            let size = this.ptr_to_size.remove(idx).1;
+            old_layout = Layout::from_size_align(size, old_layout.align()).unwrap();
+        }
+
+        let end_addr = (ptr.as_ptr() as usize) + old_layout.size();
+
+        for free_ranges in this.free_list.iter_mut() {
+            for free_range_idx in 0..free_ranges.len() {
+                let free_range = *free_ranges.get(free_range_idx).unwrap();
+                if free_range.ptr == end_addr {
+                    if free_range.len + old_layout.size() > new_layout.size() {
+                        let size_diff = new_layout.size() - old_layout.size();
+                        free_ranges[free_range_idx].len -= size_diff;
+                        this.ptr_to_size
+                            .push((ptr.as_ptr() as usize, new_layout.size()));
+                        return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
+                    } else if free_range.len + old_layout.size() == new_layout.size() {
+                        free_ranges.swap_remove(free_range_idx);
+                        this.ptr_to_size
+                            .push((ptr.as_ptr() as usize, new_layout.size()));
+                        return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
+                    } else {
+                        return Err(AllocError);
+                    }
+                }
+            }
+        }
+
+        Err(AllocError)
     }
 }
