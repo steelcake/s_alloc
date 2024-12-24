@@ -43,8 +43,6 @@ unsafe impl<Alloc: Allocator> Allocator for ValidatingAllocator<Alloc> {
                 ptr: x.cast::<u8>().as_ptr() as usize,
                 len: x.len(),
             };
-            println!("{}", slice.len);
-            println!("{}", layout.size());
             let mut alive_allocs = self.alive_allocs.borrow_mut();
             for other in alive_allocs.iter() {
                 assert_disjoint(slice, *other);
@@ -62,12 +60,9 @@ unsafe impl<Alloc: Allocator> Allocator for ValidatingAllocator<Alloc> {
                 ptr: ptr.as_ptr() as usize,
                 len: layout.size(),
             };
-            println!("{}", layout.size());
             let mut alive_allocs = self.alive_allocs.borrow_mut();
             for i in 0..alive_allocs.len() {
-                dbg!((alive_allocs[i], slice));
                 if alive_allocs[i] == slice {
-                    self.inner.deallocate(ptr, layout);
                     alive_allocs.swap_remove(i);
                     return;
                 }

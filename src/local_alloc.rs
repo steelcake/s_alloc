@@ -222,7 +222,11 @@ impl<'a> LocalAlloc<'a> {
         Ok(x)
     }
 
-    fn dealloc(this: &mut InnerLocalAlloc, ptr: NonNull<u8>, _size: usize) {
+    fn dealloc(this: &mut InnerLocalAlloc, ptr: NonNull<u8>, size: usize) {
+        if size == 0 {
+            return;
+        }
+
         let addr = ptr.as_ptr() as usize;
         let size_idx = this
             .ptr_to_size
@@ -230,10 +234,6 @@ impl<'a> LocalAlloc<'a> {
             .position(|x| x.0 == addr)
             .expect("find allocation index");
         let size = this.ptr_to_size.swap_remove(size_idx).1;
-
-        if size == 0 {
-            return;
-        }
 
         let start_addr = ptr.as_ptr() as usize;
         let end_addr = start_addr + size;
