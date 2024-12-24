@@ -137,12 +137,8 @@ unsafe impl<Alloc: Allocator> Allocator for BumpAlloc<Alloc> {
 
         // Increasing the alignment is not supported
         // Decrasing doesn't matter since we don't move the pointer around
-        if old_layout.align() < new_layout.align() {
+        if old_layout.align() != new_layout.align() {
             return Err(AllocError);
-        }
-
-        if new_layout.size() == 0 {
-            return Ok(NonNull::slice_from_raw_parts(NonNull::dangling(), 0));
         }
 
         if new_layout.size() <= old_layout.size() {

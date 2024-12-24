@@ -315,8 +315,9 @@ unsafe impl Allocator for LocalAlloc<'_> {
         mut old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        assert!(new_layout.size() > old_layout.size());
-        assert_eq!(old_layout.align(), new_layout.align());
+        if new_layout.size() > old_layout.size() || old_layout.align() != new_layout.align() {
+            return Err(AllocError);
+        }
 
         let mut this = self.inner.borrow_mut();
         let this = this.deref_mut();
