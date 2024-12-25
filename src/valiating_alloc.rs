@@ -79,68 +79,32 @@ unsafe impl<Alloc: Allocator> Allocator for ValidatingAllocator<Alloc> {
     ) -> Result<NonNull<[u8]>, AllocError> {
         let x = self.inner.grow(ptr, old_layout, new_layout)?;
 
-        if new_layout.size() > 0 {
-            let old_slice = Slice {
-                ptr: ptr.as_ptr() as usize,
-                len: old_layout.size(),
-            };
-            let new_slice = Slice {
-                ptr: x.cast::<u8>().as_ptr() as usize,
-                len: x.len(),
-            };
-            check_layout(x, new_layout);
+        assert_eq!(old_layout.align(), new_layout.align());
+        assert!(new_layout.size() > old_layout.size());
 
-            let mut alive_allocs = self.alive_allocs.borrow_mut();
-            if old_layout.size() > 0 {
-                for alive_alloc in alive_allocs.iter_mut() {
-                    if alive_alloc == &old_slice {
-                        *alive_alloc = new_slice;
-                        return Ok(x);
-                    }
+        let old_slice = Slice {
+            ptr: ptr.as_ptr() as usize,
+            len: old_layout.size(),
+        };
+        let new_slice = Slice {
+            ptr: x.cast::<u8>().as_ptr() as usize,
+            len: x.len(),
+        };
+        check_layout(x, new_layout);
+
+        let mut alive_allocs = self.alive_allocs.borrow_mut();
+        if old_layout.size() > 0 {
+            for alive_alloc in alive_allocs.iter_mut() {
+                if alive_alloc == &old_slice {
+                    *alive_alloc = new_slice;
+                    return Ok(x);
                 }
-            } else {
-                alive_allocs.push(new_slice);
-                return Ok(x);
             }
-            panic!("bad grow call");
+        } else {
+            alive_allocs.push(new_slice);
+            return Ok(x);
         }
 
-        Ok(x)
-    }
-
-    unsafe fn shrink(
-        &self,
-        ptr: NonNull<u8>,
-        old_layout: Layout,
-        new_layout: Layout,
-    ) -> Result<NonNull<[u8]>, AllocError> {
-        let x = self.inner.shrink(ptr, old_layout, new_layout)?;
-
-        if new_layout.size() > 0 {
-            let old_slice = Slice {
-                ptr: ptr.as_ptr() as usize,
-                len: old_layout.size(),
-            };
-            let new_slice = Slice {
-                ptr: x.cast::<u8>().as_ptr() as usize,
-                len: x.len(),
-            };
-            check_layout(x, new_layout);
-
-            let mut alive_allocs = self.alive_allocs.borrow_mut();
-            if old_layout.size() > 0 {
-                for alive_alloc in alive_allocs.iter_mut() {
-                    if alive_alloc == &old_slice {
-                        *alive_alloc = new_slice;
-                        return Ok(x);
-                    }
-                }
-            } else {
-                alive_allocs.push(new_slice);
-                return Ok(x);
-            }
-            panic!("bad shrink call");
-        }
-        Ok(x)
+        panic!("bad grow call");
     }
 }

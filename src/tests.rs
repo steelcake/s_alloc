@@ -52,7 +52,22 @@ fn test_allocator<Alloc: Allocator>(alloc: Alloc) {
     unsafe { alloc.deallocate(ptr.cast::<u8>(), Layout::from_size_align(0, 1).unwrap()) };
 }
 
-fn test_allocator_aligned<Alloc: Allocator>(alloc: Alloc) {}
+fn test_allocator_aligned<Alloc: Allocator>(alloc: Alloc) {
+    let alloc = ValidatingAllocator::new(alloc);
+    let mut aligns = Vec::<(NonNull<[u8]>, Layout), &ValidatingAllocator<Alloc>>::new_in(&alloc);
+    for pow in 0..12 {
+        let alignment = 1 << pow;
+
+        let layout = Layout::from_size_align(69, alignment).unwrap();
+        let ptr = alloc.allocate(layout).unwrap();
+
+        aligns.push((ptr, layout));
+    }
+
+    // for (ptr, layout) in aligns {
+    //     unsafe { alloc.deallocate(ptr.cast::<u8>(), layout) };
+    // }
+}
 
 fn test_allocator_large_alignment<Alloc: Allocator>(alloc: Alloc) {}
 

@@ -95,7 +95,7 @@ unsafe impl<Alloc: Allocator> Allocator for BumpAlloc<Alloc> {
         let align_offs = align_offset(this.current_alloc.ptr, layout.align());
 
         if this.current_alloc.len >= align_offs + layout.size() {
-            let ptr = NonNull::new(this.current_alloc.ptr as *mut u8).unwrap();
+            let ptr = NonNull::new((this.current_alloc.ptr + align_offs) as *mut u8).unwrap();
 
             this.current_alloc.ptr += align_offs + layout.size();
             this.current_alloc.len -= align_offs + layout.size();
@@ -132,29 +132,31 @@ unsafe impl<Alloc: Allocator> Allocator for BumpAlloc<Alloc> {
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        let mut this = self.inner.borrow_mut();
-        let this = this.deref_mut();
+        {
+            let mut this = self.inner.borrow_mut();
+            let this = this.deref_mut();
 
-        // Increasing the alignment is not supported
-        // Decrasing doesn't matter since we don't move the pointer around
-        if old_layout.align() != new_layout.align() {
-            return Err(AllocError);
-        }
+            // Increasing the alignment is not supported
+            // Decrasing doesn't matter since we don't move the pointer around
+            if old_layout.align() != new_layout.align() {
+                return Err(AllocError);
+            }
 
-        if new_layout.size() <= old_layout.size() {
-            return Err(AllocError);
-        }
+            if new_layout.size() <= old_layout.size() {
+                return Err(AllocError);
+            }
 
-        let start_addr = (ptr.as_ptr() as usize) + old_layout.size();
+            let start_addr = (ptr.as_ptr() as usize) + old_layout.size();
 
-        let size_diff = new_layout.size() - old_layout.size();
-        if this.current_alloc.ptr == start_addr && this.current_alloc.len >= size_diff {
-            this.current_alloc.ptr += size_diff;
-            this.current_alloc.len -= size_diff;
+            let size_diff = new_layout.size() - old_layout.size();
+            if this.current_alloc.ptr == start_addr && this.current_alloc.len >= size_diff {
+                this.current_alloc.ptr += size_diff;
+                this.current_alloc.len -= size_diff;
 
-            return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
-        }
+                return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
+            }
+        } // end "this" scope
 
-        Err(AllocError)
+        self.allocate(new_layout)
     }
 }

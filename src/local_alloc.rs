@@ -315,51 +315,58 @@ unsafe impl Allocator for LocalAlloc<'_> {
         mut old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        if new_layout.size() > old_layout.size() || old_layout.align() != new_layout.align() {
-            return Err(AllocError);
-        }
+        assert!(new_layout.size() > old_layout.size());
+        assert_eq!(old_layout.align(), new_layout.align());
 
-        let mut this = self.inner.borrow_mut();
-        let this = this.deref_mut();
+        {
+            let mut this = self.inner.borrow_mut();
+            let this = this.deref_mut();
 
-        if old_layout.size() == 0 && new_layout.size() > 0 {
-            return Self::alloc(this, new_layout);
-        }
+            if old_layout.size() == 0 && new_layout.size() > 0 {
+                return Self::alloc(this, new_layout);
+            }
 
-        if old_layout.size() > 0 {
-            let idx = this
-                .ptr_to_size
-                .iter()
-                .position(|x| x.0 == ptr.as_ptr() as usize)
-                .expect("find old alloc size");
-            let size = this.ptr_to_size.remove(idx).1;
-            old_layout = Layout::from_size_align(size, old_layout.align()).unwrap();
-        }
+            if old_layout.size() > 0 {
+                let idx = this
+                    .ptr_to_size
+                    .iter()
+                    .position(|x| x.0 == ptr.as_ptr() as usize)
+                    .expect("find old alloc size");
+                let size = this.ptr_to_size.remove(idx).1;
+                old_layout = Layout::from_size_align(size, old_layout.align()).unwrap();
+            }
 
-        let end_addr = (ptr.as_ptr() as usize) + old_layout.size();
+            let end_addr = (ptr.as_ptr() as usize) + old_layout.size();
 
-        for free_ranges in this.free_list.iter_mut() {
-            for free_range_idx in 0..free_ranges.len() {
-                let free_range = *free_ranges.get(free_range_idx).unwrap();
-                if free_range.ptr == end_addr {
-                    if free_range.len + old_layout.size() > new_layout.size() {
-                        let size_diff = new_layout.size() - old_layout.size();
-                        free_ranges[free_range_idx].len -= size_diff;
-                        this.ptr_to_size
-                            .push((ptr.as_ptr() as usize, new_layout.size()));
-                        return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
-                    } else if free_range.len + old_layout.size() == new_layout.size() {
-                        free_ranges.swap_remove(free_range_idx);
-                        this.ptr_to_size
-                            .push((ptr.as_ptr() as usize, new_layout.size()));
-                        return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
-                    } else {
-                        return Err(AllocError);
+            'try_alloc: for free_ranges in this.free_list.iter_mut() {
+                for free_range_idx in 0..free_ranges.len() {
+                    let free_range = *free_ranges.get(free_range_idx).unwrap();
+                    if free_range.ptr == end_addr {
+                        if free_range.len + old_layout.size() > new_layout.size() {
+                            let size_diff = new_layout.size() - old_layout.size();
+                            free_ranges[free_range_idx].len -= size_diff;
+                            this.ptr_to_size
+                                .push((ptr.as_ptr() as usize, new_layout.size()));
+                            return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
+                        } else if free_range.len + old_layout.size() == new_layout.size() {
+                            free_ranges.swap_remove(free_range_idx);
+                            this.ptr_to_size
+                                .push((ptr.as_ptr() as usize, new_layout.size()));
+                            return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
+                        } else {
+                            break 'try_alloc;
+                        }
                     }
                 }
             }
-        }
 
-        Err(AllocError)
+            if old_layout.size() > 0 {
+                this.ptr_to_size
+                    .push((ptr.as_ptr() as usize, old_layout.size()));
+            }
+        } // end "this" scope
+
+        self.deallocate(ptr.cast::<u8>(), old_layout);
+        self.allocate(new_layout)
     }
 }
