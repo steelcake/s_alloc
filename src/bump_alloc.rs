@@ -53,6 +53,22 @@ pub struct BumpAlloc<Alloc: Allocator> {
     inner: RefCell<InnerBumpAlloc<Alloc>>,
 }
 
+impl<Alloc: Allocator> Drop for BumpAlloc<Alloc> {
+    fn drop(&mut self) {
+        unsafe {
+            let mut this = self.inner.borrow_mut();
+            let this = this.deref_mut();
+
+            for &x in this.allocations.iter() {
+                this.base_alloc.deallocate(
+                    NonNull::new(x.ptr as *mut u8).unwrap(),
+                    Layout::from_size_align(x.len, 1 << 12).unwrap(),
+                );
+            }
+        }
+    }
+}
+
 impl<Alloc: Allocator> BumpAlloc<Alloc> {
     pub fn new(config: Config<Alloc>) -> Self {
         Self {
@@ -157,6 +173,14 @@ unsafe impl<Alloc: Allocator> Allocator for BumpAlloc<Alloc> {
             }
         } // end "this" scope
 
-        self.allocate(new_layout)
+        let new_ptr = self.allocate(new_layout)?;
+
+        std::ptr::copy_nonoverlapping(
+            ptr.as_ptr(),
+            new_ptr.cast::<u8>().as_ptr(),
+            old_layout.size(),
+        );
+
+        Ok(new_ptr)
     }
 }

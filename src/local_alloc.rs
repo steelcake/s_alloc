@@ -366,7 +366,15 @@ unsafe impl Allocator for LocalAlloc<'_> {
             }
         } // end "this" scope
 
+        let new_ptr = self.allocate(new_layout)?;
+
+        std::ptr::copy_nonoverlapping(
+            ptr.as_ptr(),
+            new_ptr.cast::<u8>().as_ptr(),
+            old_layout.size(),
+        );
         self.deallocate(ptr.cast::<u8>(), old_layout);
-        self.allocate(new_layout)
+
+        Ok(new_ptr)
     }
 }

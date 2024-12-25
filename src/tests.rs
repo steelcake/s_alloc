@@ -8,6 +8,11 @@ use crate::{
 };
 
 #[test]
+fn test_global_alloc() {
+    test_allocator_all(&std::alloc::Global);
+}
+
+#[test]
 fn test_local_alloc() {
     let alloc = LocalAlloc::new(local_alloc::Config::new(&std::alloc::Global));
     test_allocator_all(alloc);
@@ -46,6 +51,14 @@ fn test_allocator<Alloc: Allocator>(alloc: Alloc) {
 
     ptrs.shrink_to_fit();
 
+    for _ in 0..100 {
+        ptrs.push(alloc.allocate(layout).unwrap());
+    }
+
+    for _ in 0..100 {
+        unsafe { alloc.deallocate(ptrs.pop().unwrap().cast::<u8>(), layout) };
+    }
+
     let ptr = alloc
         .allocate(Layout::from_size_align(0, 1).unwrap())
         .unwrap();
@@ -64,18 +77,18 @@ fn test_allocator_aligned<Alloc: Allocator>(alloc: Alloc) {
         aligns.push((ptr, layout));
     }
 
-    // for (ptr, layout) in aligns {
-    //     unsafe { alloc.deallocate(ptr.cast::<u8>(), layout) };
-    // }
+    for (ptr, layout) in aligns {
+        unsafe { alloc.deallocate(ptr.cast::<u8>(), layout) };
+    }
 }
 
-fn test_allocator_large_alignment<Alloc: Allocator>(alloc: Alloc) {}
+// fn test_allocator_large_alignment<Alloc: Allocator>(alloc: Alloc) {}
 
-fn test_allocator_aligned_shrink<Alloc: Allocator>(alloc: Alloc) {}
+// fn test_allocator_aligned_shrink<Alloc: Allocator>(alloc: Alloc) {}
 
 fn test_allocator_all<Alloc: Allocator>(alloc: Alloc) {
     test_allocator(&alloc);
     test_allocator_aligned(&alloc);
-    test_allocator_large_alignment(&alloc);
-    test_allocator_aligned_shrink(&alloc);
+    // test_allocator_large_alignment(&alloc);
+    // test_allocator_aligned_shrink(&alloc);
 }
